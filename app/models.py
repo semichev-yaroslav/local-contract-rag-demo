@@ -30,6 +30,8 @@ class ContractDocument:
     full_text: str
     extraction_confidence: float
     created_at: str
+    openai_file_id: str = ""
+    openai_vector_store_file_id: str = ""
 
 
 @dataclass

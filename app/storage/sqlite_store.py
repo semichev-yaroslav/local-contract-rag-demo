@@ -33,7 +33,9 @@ class SQLiteStore:
                 signed_status TEXT,
                 full_text TEXT NOT NULL,
                 extraction_confidence REAL NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                openai_file_id TEXT,
+                openai_vector_store_file_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS chunks (
@@ -59,9 +61,25 @@ class SQLiteStore:
                 section_name,
                 text
             );
+
+            CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         )
+        self._ensure_column("documents", "openai_file_id", "TEXT")
+        self._ensure_column("documents", "openai_vector_store_file_id", "TEXT")
         self.connection.commit()
+
+    def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
+        columns = self.connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        column_names = {column["name"] for column in columns}
+        if column_name in column_names:
+            return
+        self.connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+        )
 
     def close(self) -> None:
         self.connection.close()
@@ -74,7 +92,12 @@ class SQLiteStore:
 
     def delete_document_by_sha256(self, sha256: str) -> None:
         row = self.connection.execute(
-            "SELECT doc_id FROM documents WHERE sha256 = ? LIMIT 1", (sha256,)
+            """
+            SELECT doc_id
+            FROM documents
+            WHERE sha256 = ? LIMIT 1
+            """,
+            (sha256,),
         ).fetchone()
         if not row:
             return
@@ -85,14 +108,38 @@ class SQLiteStore:
         self.connection.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
         self.connection.commit()
 
+    def find_document_by_sha256(self, sha256: str) -> Optional[ContractDocument]:
+        row = self.connection.execute(
+            "SELECT * FROM documents WHERE sha256 = ? LIMIT 1", (sha256,)
+        ).fetchone()
+        return self._row_to_document(row) if row else None
+
+    def set_state(self, key: str, value: str) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO app_state (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+        self.connection.commit()
+
+    def get_state(self, key: str) -> str:
+        row = self.connection.execute(
+            "SELECT value FROM app_state WHERE key = ? LIMIT 1", (key,)
+        ).fetchone()
+        return row["value"] if row else ""
+
     def upsert_document(self, document: ContractDocument, chunks: Iterable[DocumentChunk]) -> None:
         self.connection.execute(
             """
             INSERT INTO documents (
                 doc_id, source_path, file_name, sha256, doc_type, counterparty_raw,
                 counterparty_normalized, doc_number, doc_date, parent_contract_number,
-                appendix_number, signed_status, full_text, extraction_confidence, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                appendix_number, signed_status, full_text, extraction_confidence, created_at,
+                openai_file_id, openai_vector_store_file_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(doc_id) DO UPDATE SET
                 source_path = excluded.source_path,
                 file_name = excluded.file_name,
@@ -107,7 +154,9 @@ class SQLiteStore:
                 signed_status = excluded.signed_status,
                 full_text = excluded.full_text,
                 extraction_confidence = excluded.extraction_confidence,
-                created_at = excluded.created_at
+                created_at = excluded.created_at,
+                openai_file_id = excluded.openai_file_id,
+                openai_vector_store_file_id = excluded.openai_vector_store_file_id
             """,
             (
                 document.doc_id,
@@ -125,6 +174,8 @@ class SQLiteStore:
                 document.full_text,
                 document.extraction_confidence,
                 document.created_at,
+                document.openai_file_id,
+                document.openai_vector_store_file_id,
             ),
         )
         self.connection.execute("DELETE FROM documents_fts WHERE doc_id = ?", (document.doc_id,))
@@ -275,4 +326,6 @@ class SQLiteStore:
             full_text=row["full_text"],
             extraction_confidence=float(row["extraction_confidence"]),
             created_at=row["created_at"],
+            openai_file_id=row["openai_file_id"] or "",
+            openai_vector_store_file_id=row["openai_vector_store_file_id"] or "",
         )

@@ -7,21 +7,16 @@ from app.retrieval.service import QueryService
 from app.storage.sqlite_store import SQLiteStore
 
 
-class FakeEmbedder:
-    def embed(self, texts):
-        return [[0.1, 0.2, 0.3] for _ in texts]
-
-
 class FakeGenerator:
     def answer(self, question, sources):
         return f"Сводка по вопросу: {question}. Источников: {len(list(sources))}."
 
 
-class FakeVectorStore:
+class FakeRetriever:
     def __init__(self, results):
         self.results = results
 
-    def search(self, query_vector, limit=5, doc_ids=None):
+    def search(self, query, limit=5, counterparty="", doc_type_hint="", doc_ids=None):
         if doc_ids:
             return [item for item in self.results if item.doc_id in doc_ids][:limit]
         return self.results[:limit]
@@ -60,7 +55,7 @@ class QueryServiceTests(unittest.TestCase):
             store.upsert_document(document, chunks)
             service = QueryService(
                 store=store,
-                vector_store=FakeVectorStore(
+                vector_store=FakeRetriever(
                     [
                         RetrievedChunk(
                             chunk_id="doc-1:0",
@@ -72,7 +67,6 @@ class QueryServiceTests(unittest.TestCase):
                         )
                     ]
                 ),
-                embedder=FakeEmbedder(),
                 generator=FakeGenerator(),
             )
 
@@ -113,7 +107,7 @@ class QueryServiceTests(unittest.TestCase):
             store.upsert_document(document, chunks)
             service = QueryService(
                 store=store,
-                vector_store=FakeVectorStore(
+                vector_store=FakeRetriever(
                     [
                         RetrievedChunk(
                             chunk_id="doc-2:0",
@@ -125,7 +119,6 @@ class QueryServiceTests(unittest.TestCase):
                         )
                     ]
                 ),
-                embedder=FakeEmbedder(),
                 generator=FakeGenerator(),
             )
 

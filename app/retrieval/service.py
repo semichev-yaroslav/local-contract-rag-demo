@@ -3,14 +3,9 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Protocol
 
 from app.models import ContractDocument, QueryIntent, RetrievedChunk, SearchAnswer
+from app.openai_support.retrieval import OpenAIVectorStoreClient
 from app.retrieval.intents import classify_question
 from app.storage.sqlite_store import SQLiteStore
-from app.storage.vector_store import QdrantVectorStore
-
-
-class EmbedderProtocol(Protocol):
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        ...
 
 
 class GeneratorProtocol(Protocol):
@@ -22,14 +17,12 @@ class QueryService:
     def __init__(
         self,
         store: SQLiteStore,
-        vector_store: QdrantVectorStore,
-        embedder: EmbedderProtocol,
+        vector_store: OpenAIVectorStoreClient,
         generator: GeneratorProtocol,
         top_k: int = 6,
     ):
         self.store = store
         self.vector_store = vector_store
-        self.embedder = embedder
         self.generator = generator
         self.top_k = top_k
 
@@ -106,8 +99,16 @@ class QueryService:
             section_hint=intent.section_hint,
             limit=self.top_k,
         )
-        query_vector = self.embedder.embed([question])[0]
-        vector_sources = self.vector_store.search(query_vector, limit=self.top_k, doc_ids=doc_ids or None)
+        try:
+            vector_sources = self.vector_store.search(
+                query=question,
+                limit=self.top_k,
+                counterparty=intent.normalized_counterparty,
+                doc_type_hint=intent.doc_type_hint,
+                doc_ids=doc_ids or None,
+            )
+        except Exception:
+            vector_sources = []
 
         merged_sources = self._merge_sources(keyword_sources, vector_sources)
         if not merged_sources:

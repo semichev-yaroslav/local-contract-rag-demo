@@ -2,14 +2,15 @@
 
 ## 1. Что реализовано в демонстрационной версии
 
-В проекте реализован локальный MVP для ответов на вопросы по договорам на русском языке.
+В проекте реализован локальный MVP для ответов на вопросы по договорам на русском языке.  
+Приложение запускается локально, но использует OpenAI API для semantic retrieval и генерации ответа.
 
 ### Цели MVP
 
 - показать рабочий ingestion pipeline для договоров
-- реализовать гибридный RAG-подход локально
+- реализовать гибридный RAG-подход
 - поддержать типовые вопросы по договорам
-- не усложнять решение OCR и промышленной инфраструктурой
+- не усложнять решение OCR и локальным model serving
 
 ### Принятые допущения
 
@@ -17,6 +18,7 @@
 - OCR для сканов PDF в рамках текущего проекта не реализован
 - признак подписи определяется только ручным override или явным текстовым признаком
 - извлечение метаданных выполняется правилами и эвристиками
+- semantic retrieval и answer generation требуют `OPENAI_API_KEY`
 
 ### Архитектура MVP
 
@@ -29,11 +31,10 @@
    - контрагент
    - номер базового договора
    - номер приложения
-4. Полный текст сохраняется в `SQLite`.
-5. Текст режется на логические чанки.
-6. Чанки индексируются в `Qdrant local`.
-7. На запросе пользователя система сначала обращается к metadata/full-text слою, затем при необходимости к vector retrieval.
-8. Локальная LLM через `Ollama` формирует финальный ответ по найденному контексту.
+4. Полный текст и локальные чанки сохраняются в `SQLite`.
+5. Исходный файл загружается в `OpenAI vector store` вместе с атрибутами документа.
+6. На запросе пользователя система сначала обращается к metadata/full-text слою, затем при необходимости к `OpenAI vector store search`.
+7. OpenAI model через `Responses API` формирует финальный ответ по найденному контексту.
 
 ### Где в проекте RAG
 
@@ -41,11 +42,11 @@
 
 - `Retrieval`:
   - точный поиск по `SQLite/FTS5`
-  - векторный поиск по `Qdrant`
+  - векторный поиск по `OpenAI vector stores`
 - `Augmented`:
   - найденные фрагменты и метаданные передаются в prompt
 - `Generation`:
-  - локальная LLM формирует ответ с опорой на найденный контекст
+  - OpenAI model формирует ответ с опорой на найденный контекст
 
 ### Какие вопросы поддерживаются лучше всего
 
@@ -55,22 +56,23 @@
 - какие условия постоплаты
 - какой будет следующий номер приложения
 
-## 2. Почему выбрана именно такая локальная реализация
+## 2. Почему выбрана именно такая реализация
 
-Для тестового задания важнее показать понятную и проверяемую архитектуру, чем собрать максимально сложный стек.
+Для тестового задания важнее показать понятную и проверяемую архитектуру, чем собирать тяжелый локальный стек с model serving.
 
 Выбранный стек:
 
 - `python-docx` для стабильного чтения `DOCX`
 - `SQLite + FTS5` для структурированного слоя и точного поиска
-- `Qdrant local` для локального vector store
-- `Ollama` для локальной LLM и локальных embeddings
+- `OpenAI vector stores` для managed semantic retrieval
+- `OpenAI Responses API` для answer synthesis
 
 Причины выбора:
 
-- решение полностью разворачивается локально
-- архитектура не завязана на облачные API
-- легко показать, где заканчивается deterministic logic и где начинается LLM
+- локально остаются ingestion, metadata extraction и orchestration
+- не нужно поднимать локальные модели и vector DB
+- решение ближе к текущим рекомендациям OpenAI для retrieval-centric приложений
+- легко показать, где заканчивается deterministic logic и где начинается managed LLM
 - систему можно эволюционно расширять без полной переделки
 
 ## 3. Что не реализовано в MVP
@@ -83,7 +85,7 @@
 
 1. Вынести OCR в отдельный ingestion-слой.
 2. Для промышленной версии использовать document parsing / OCR сервисы.
-3. После OCR передавать распознанный текст в тот же pipeline извлечения metadata и chunking.
+3. После OCR передавать распознанный текст в тот же pipeline извлечения metadata и retrieval.
 
 Варианты реализации:
 
@@ -95,7 +97,7 @@
 Для надежного определения факта подписания потребуются:
 
 - явный статус из внешней системы
-- отдельная логика работы с ЭДО/архивом
+- отдельная логика работы с ЭДО или архивом
 - либо vision/layout модуль для анализа финальных страниц сканов
 
 ## 4. Как выглядела бы продвинутая рабочая версия
@@ -144,19 +146,19 @@
 #### Вариант B: OpenAI managed retrieval
 
 - `Responses API`
-- `file_search`
 - `vector stores`
+- `vector store search` или `file_search`
 
 Плюсы:
 
 - минимальный код для retrieval
-- автоматически выполняются parsing, chunking, embedding и search
+- OpenAI сам управляет парсингом, chunking и embeddings внутри hosted retrieval-контура
 - удобно для быстрого managed MVP
 
 Ограничение:
 
-- не локальный стек
 - для договоров все равно желателен внешний metadata слой
+- OCR и статусы подписи должны приходить из дополнительных компонентов
 
 #### Вариант C: AWS stack
 
@@ -177,12 +179,12 @@
 | Форматы | DOCX | DOCX, PDF, сканы, вложения |
 | OCR | Нет | Да |
 | Извлечение metadata | Правила и эвристики | Document AI + rules + review |
-| Хранилище | SQLite + Qdrant local | Managed DB + managed search |
-| LLM | Локальная через Ollama | Облачная или частично локальная |
+| Хранилище | SQLite + OpenAI vector stores | Managed DB + managed search |
+| LLM | OpenAI через API | Облачная или частично локальная |
 | Поиск | Hybrid basic | Hybrid + reranking + governance |
 | Определение подписи | Упрощенное | Интеграция с источником статуса / vision |
 | Надежность | Демо-уровень | Production-уровень |
-| Масштабируемость | Небольшой локальный корпус | Корпоративный контур |
+| Масштабируемость | Небольшой корпус | Корпоративный контур |
 
 ## 6. Рекомендация по развитию
 
@@ -197,8 +199,8 @@
 
 ## 7. Использованные ориентиры по современным решениям
 
-- OpenAI Retrieval / File Search: [Retrieval](https://platform.openai.com/docs/guides/retrieval), [File search](https://platform.openai.com/docs/guides/tools-file-search)
+- OpenAI: [Retrieval](https://platform.openai.com/docs/guides/retrieval), [File search](https://platform.openai.com/docs/guides/tools-file-search), [Vector stores API](https://platform.openai.com/docs/api-reference/vector-stores), [Responses API](https://platform.openai.com/docs/api-reference/responses)
 - Azure: [Document Intelligence overview](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/overview?tabs=v3-0&view=doc-intel-3.0.0&viewFallbackFrom=form-recog-3.0.0), [Vector search overview](https://learn.microsoft.com/en-us/azure/search/vector-search-overview)
 - AWS: [Textract overview](https://docs.aws.amazon.com/textract/latest/dg/what-is.html), [Bedrock Knowledge Bases](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html)
 - GCP: [Document AI overview](https://cloud.google.com/document-ai/docs/overview), [Vertex AI Vector Search overview](https://cloud.google.com/vertex-ai/docs/vector-search/overview)
-- Local stack: [Qdrant Local](https://python-client.qdrant.tech/qdrant_client.local.qdrant_local), [Ollama](https://docs.ollama.com/), [SQLite FTS5](https://www.sqlite.org/fts5.html)
+- Local metadata layer: [SQLite FTS5](https://www.sqlite.org/fts5.html)

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 from typing import Iterable
 
-import requests
+from openai import OpenAI
 
 from app.models import RetrievedChunk
 
@@ -13,10 +14,11 @@ SYSTEM_PROMPT = """Ты помощник по договорам.
 Если можешь, укажи номер договора, дату и источник."""
 
 
-class OllamaChatClient:
+class OpenAIChatClient:
     def __init__(self, base_url: str, model: str):
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self._client: OpenAI | None = None
 
     def answer(self, question: str, sources: Iterable[RetrievedChunk]) -> str:
         context = []
@@ -28,21 +30,24 @@ class OllamaChatClient:
             )
         prompt = "\n\n".join(context) or "Контекст отсутствует."
 
-        response = requests.post(
-            f"{self.base_url}/api/chat",
-            json={
-                "model": self.model,
-                "stream": False,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"Вопрос: {question}\n\nКонтекст:\n{prompt}",
-                    },
-                ],
-            },
-            timeout=180,
+        response = self._get_client().responses.create(
+            model=self.model,
+            instructions=SYSTEM_PROMPT,
+            input=f"Вопрос: {question}\n\nКонтекст:\n{prompt}",
+            temperature=0.1,
+            max_output_tokens=600,
         )
-        response.raise_for_status()
-        payload = response.json()
-        return payload["message"]["content"].strip()
+        output_text = getattr(response, "output_text", "")
+        if output_text:
+            return output_text.strip()
+        payload = response.model_dump()
+        return str(payload)
+
+    def _get_client(self) -> OpenAI:
+        if self._client is not None:
+            return self._client
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set.")
+        self._client = OpenAI(api_key=api_key, base_url=self.base_url)
+        return self._client

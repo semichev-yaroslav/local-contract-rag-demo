@@ -1,23 +1,23 @@
-# Локальный RAG по договорам
+# RAG по договорам на OpenAI
 
-Локальный MVP для поиска ответов по договорам на русском языке. Система поддерживает загрузку `DOCX`, извлекает метаданные, строит гибридный индекс (`SQLite/FTS5` + `Qdrant`) и использует локальную LLM через `Ollama` для ответов по содержанию документов.
+Локальный MVP для поиска ответов по договорам на русском языке. Приложение запускается локально, читает `DOCX`, извлекает метаданные, хранит структурированный слой в `SQLite/FTS5`, а semantic retrieval и генерацию ответа выполняет через OpenAI API.
 
 ## Что реализовано
 
 - ingestion для `DOCX`
 - извлечение метаданных правилами и эвристиками
-- хранение реестра договоров и чанков в `SQLite`
-- full-text поиск через `FTS5`
-- векторный поиск в `Qdrant local`
-- генерация ответа через `Ollama`
-- CLI и HTTP API для индексации и запросов
+- локальный реестр документов и чанков в `SQLite`
+- exact/full-text поиск через `FTS5`
+- semantic retrieval через `OpenAI vector stores`
+- генерация ответа через `OpenAI Responses API`
+- CLI и HTTP API
 
 ## Ограничения MVP
 
 - поддерживается только `DOCX`
 - OCR для сканов PDF не реализован
 - признак подписи определяется вручную через overrides или упрощенным статусом `unknown`
-- извлечение метаданных основано на правилах; для нестандартных шаблонов потребуется доработка
+- для semantic retrieval и генерации ответа нужен `OPENAI_API_KEY`
 
 ## Быстрый старт
 
@@ -29,11 +29,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2. Поднять локальные модели в `Ollama`:
+2. Подготовить переменные окружения:
 
 ```bash
-ollama pull qwen2.5:7b
-ollama pull qwen3-embedding:0.6b
+export OPENAI_API_KEY="..."
+export OPENAI_CHAT_MODEL="gpt-5-mini"
 ```
 
 3. Положить документы в папку `data/raw`.
@@ -60,16 +60,20 @@ uvicorn app.api:app --reload
 
 ## Настройки
 
-Основные параметры читаются из переменных окружения:
-
-- `OLLAMA_BASE_URL` по умолчанию `http://localhost:11434`
-- `OLLAMA_CHAT_MODEL` по умолчанию `qwen2.5:7b`
-- `OLLAMA_EMBED_MODEL` по умолчанию `qwen3-embedding:0.6b`
+- `OPENAI_API_KEY` обязателен для ingestion и semantic QA
+- `OPENAI_BASE_URL` по умолчанию `https://api.openai.com/v1`
+- `OPENAI_CHAT_MODEL` по умолчанию `gpt-5-mini`
+- `OPENAI_VECTOR_STORE_NAME` по умолчанию `contract-knowledge-base`
+- `OPENAI_VECTOR_STORE_ID` опционален, если нужен уже существующий vector store
 - `DB_PATH` по умолчанию `data/db/contracts.sqlite3`
-- `QDRANT_PATH` по умолчанию `data/db/qdrant`
-- `QDRANT_COLLECTION` по умолчанию `contract_chunks`
 - `TOP_K` по умолчанию `6`
 
 ## Архитектура
 
-Схема работы описана в [docs/explanatory_note.md](docs/explanatory_note.md).
+1. Локальный сервис читает `DOCX` и извлекает metadata.
+2. Metadata и локальные чанки сохраняются в `SQLite`.
+3. Исходные файлы загружаются в `OpenAI vector store` с атрибутами документа.
+4. На запросе сначала используется metadata/full-text слой, затем semantic retrieval через OpenAI.
+5. Ответ синтезируется через `Responses API` по найденному контексту.
+
+Подробности и пояснительная записка: [docs/explanatory_note.md](docs/explanatory_note.md)
