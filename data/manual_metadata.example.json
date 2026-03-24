@@ -1,0 +1,10 @@
+{
+  "Договор_Ромашка.docx": {
+    "counterparty_raw": "ООО \"Ромашка\"",
+    "signed_status": "signed"
+  },
+  "Приложение_1_Ромашка.docx": {
+    "parent_contract_number": "15/24",
+    "appendix_number": 1
+  }
+}

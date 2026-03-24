@@ -1,0 +1,204 @@
+# Пояснительная записка
+
+## 1. Что реализовано в демонстрационной версии
+
+В проекте реализован локальный MVP для ответов на вопросы по договорам на русском языке.
+
+### Цели MVP
+
+- показать рабочий ingestion pipeline для договоров
+- реализовать гибридный RAG-подход локально
+- поддержать типовые вопросы по договорам
+- не усложнять решение OCR и промышленной инфраструктурой
+
+### Принятые допущения
+
+- на вход подаются документы в формате `DOCX`
+- OCR для сканов PDF в рамках текущего проекта не реализован
+- признак подписи определяется только ручным override или явным текстовым признаком
+- извлечение метаданных выполняется правилами и эвристиками
+
+### Архитектура MVP
+
+1. Документ загружается из локальной папки или через HTTP API.
+2. Документ читается модулем `python-docx`.
+3. Из текста извлекаются метаданные:
+   - тип документа
+   - номер
+   - дата
+   - контрагент
+   - номер базового договора
+   - номер приложения
+4. Полный текст сохраняется в `SQLite`.
+5. Текст режется на логические чанки.
+6. Чанки индексируются в `Qdrant local`.
+7. На запросе пользователя система сначала обращается к metadata/full-text слою, затем при необходимости к vector retrieval.
+8. Локальная LLM через `Ollama` формирует финальный ответ по найденному контексту.
+
+### Где в проекте RAG
+
+В проекте реализован гибридный RAG:
+
+- `Retrieval`:
+  - точный поиск по `SQLite/FTS5`
+  - векторный поиск по `Qdrant`
+- `Augmented`:
+  - найденные фрагменты и метаданные передаются в prompt
+- `Generation`:
+  - локальная LLM формирует ответ с опорой на найденный контекст
+
+### Какие вопросы поддерживаются лучше всего
+
+- есть ли договор с контрагентом
+- есть ли подписанный договор при наличии ручного статуса
+- какой номер и дата договора
+- какие условия постоплаты
+- какой будет следующий номер приложения
+
+## 2. Почему выбрана именно такая локальная реализация
+
+Для тестового задания важнее показать понятную и проверяемую архитектуру, чем собрать максимально сложный стек.
+
+Выбранный стек:
+
+- `python-docx` для стабильного чтения `DOCX`
+- `SQLite + FTS5` для структурированного слоя и точного поиска
+- `Qdrant local` для локального vector store
+- `Ollama` для локальной LLM и локальных embeddings
+
+Причины выбора:
+
+- решение полностью разворачивается локально
+- архитектура не завязана на облачные API
+- легко показать, где заканчивается deterministic logic и где начинается LLM
+- систему можно эволюционно расширять без полной переделки
+
+## 3. Что не реализовано в MVP
+
+### OCR и разбор сканов PDF
+
+Сканированные PDF в проекте не поддержаны. Это осознанное упрощение.
+
+Как это можно добавить:
+
+1. Вынести OCR в отдельный ingestion-слой.
+2. Для промышленной версии использовать document parsing / OCR сервисы.
+3. После OCR передавать распознанный текст в тот же pipeline извлечения metadata и chunking.
+
+Варианты реализации:
+
+- локально: `Docling`, `Marker`, `PaddleOCR`, `Tesseract`, `Surya`
+- в облаке: `Azure AI Document Intelligence`, `Google Document AI`, `Amazon Textract`
+
+### Более надежное определение подписи
+
+Для надежного определения факта подписания потребуются:
+
+- явный статус из внешней системы
+- отдельная логика работы с ЭДО/архивом
+- либо vision/layout модуль для анализа финальных страниц сканов
+
+## 4. Как выглядела бы продвинутая рабочая версия
+
+### Целевая production-архитектура
+
+1. Источники документов:
+   - файловое хранилище
+   - ЭДО
+   - CRM / ERP
+2. Document intelligence слой:
+   - OCR
+   - layout parsing
+   - таблицы
+   - key-value extraction
+3. Knowledge layer:
+   - metadata storage
+   - full-text search
+   - hybrid/vector search
+4. Orchestration layer:
+   - intent classification
+   - retrieval routing
+   - правила по бизнес-логике
+5. LLM layer:
+   - генерация grounded-ответов
+   - ссылки на источники
+   - контроль галлюцинаций
+6. Human-in-the-loop:
+   - ручная проверка спорных извлечений
+   - аудит ответов
+
+### Самые сильные готовые решения
+
+#### Вариант A: Azure enterprise stack
+
+- `Azure AI Document Intelligence` для OCR и структурного разбора документов
+- `Azure AI Search` для hybrid/vector retrieval
+- `Azure OpenAI` для генерации ответов
+
+Плюсы:
+
+- сильный document AI слой
+- managed indexing и hybrid search
+- удобен для корпоративных сценариев с документами
+
+#### Вариант B: OpenAI managed retrieval
+
+- `Responses API`
+- `file_search`
+- `vector stores`
+
+Плюсы:
+
+- минимальный код для retrieval
+- автоматически выполняются parsing, chunking, embedding и search
+- удобно для быстрого managed MVP
+
+Ограничение:
+
+- не локальный стек
+- для договоров все равно желателен внешний metadata слой
+
+#### Вариант C: AWS stack
+
+- `Amazon Textract`
+- `Amazon Bedrock Knowledge Bases`
+- LLM через `Bedrock`
+
+#### Вариант D: GCP stack
+
+- `Google Document AI`
+- `Vertex AI Vector Search` или `Vertex AI RAG Engine`
+- LLM через `Vertex AI`
+
+## 5. Сравнение текущей и продвинутой версии
+
+| Критерий | Текущий MVP | Продвинутая версия |
+|---|---|---|
+| Форматы | DOCX | DOCX, PDF, сканы, вложения |
+| OCR | Нет | Да |
+| Извлечение metadata | Правила и эвристики | Document AI + rules + review |
+| Хранилище | SQLite + Qdrant local | Managed DB + managed search |
+| LLM | Локальная через Ollama | Облачная или частично локальная |
+| Поиск | Hybrid basic | Hybrid + reranking + governance |
+| Определение подписи | Упрощенное | Интеграция с источником статуса / vision |
+| Надежность | Демо-уровень | Production-уровень |
+| Масштабируемость | Небольшой локальный корпус | Корпоративный контур |
+
+## 6. Рекомендация по развитию
+
+Если развивать текущее решение дальше, этапы были бы такими:
+
+1. добавить OCR-слой для PDF и сканов
+2. добавить более надежную нормализацию контрагентов
+3. вынести metadata extraction в отдельный pipeline с quality checks
+4. добавить reranker
+5. подключить внешние системы для статуса подписи и жизненного цикла договора
+6. перейти на managed search/document AI при выходе из MVP
+
+## 7. Использованные ориентиры по современным решениям
+
+- OpenAI Retrieval / File Search: [Retrieval](https://platform.openai.com/docs/guides/retrieval), [File search](https://platform.openai.com/docs/guides/tools-file-search)
+- Azure: [Document Intelligence overview](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/overview?tabs=v3-0&view=doc-intel-3.0.0&viewFallbackFrom=form-recog-3.0.0), [Vector search overview](https://learn.microsoft.com/en-us/azure/search/vector-search-overview)
+- AWS: [Textract overview](https://docs.aws.amazon.com/textract/latest/dg/what-is.html), [Bedrock Knowledge Bases](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html)
+- GCP: [Document AI overview](https://cloud.google.com/document-ai/docs/overview), [Vertex AI Vector Search overview](https://cloud.google.com/vertex-ai/docs/vector-search/overview)
+- Local stack: [Qdrant Local](https://python-client.qdrant.tech/qdrant_client.local.qdrant_local), [Ollama](https://docs.ollama.com/), [SQLite FTS5](https://www.sqlite.org/fts5.html)
